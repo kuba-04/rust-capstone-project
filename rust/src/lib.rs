@@ -1,4 +1,3 @@
-use bitcoin::hex::{Case, DisplayHex};
 use bitcoincore_rpc::bitcoin::{Address, Amount, BlockHash, Network, Txid};
 use bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
 use bitcoincore_rpc::json::LoadWalletResult;
@@ -147,32 +146,26 @@ impl TransactionDetails {
     fn get_change_details(
         miner_rpc: &Client,
         tx_id: Txid,
-        trader_output_address: &Address,
+        recipient_output_address: &Address,
     ) -> Result<(Address, f64), RpcError> {
-        let miner_tx = miner_rpc.get_transaction(&tx_id, None)?;
-        let miner_raw_tx = miner_rpc
-            .decode_raw_transaction(miner_tx.hex.to_hex_string(Case::Lower), Some(true))?;
+        let raw_tx = miner_rpc.get_raw_transaction(&tx_id, None)?;
 
-        let miner_vout = miner_raw_tx
-            .vout
+        let change_output = raw_tx
+            .output
             .iter()
-            .find(|v| {
-                v.script_pub_key
-                    .address
-                    .as_ref()
-                    .is_some_and(|addr| addr != trader_output_address)
+            .find(|output| {
+                if let Ok(addr) = Address::from_script(&output.script_pubkey, Network::Regtest) {
+                    addr != *recipient_output_address
+                } else {
+                    false
+                }
             })
-            .ok_or_else(|| RpcError::ReturnedError("No miner change output found".into()))?;
+            .ok_or_else(|| RpcError::ReturnedError("No change output found".into()))?;
 
-        let change_address = miner_vout
-            .clone()
-            .script_pub_key
-            .address
-            .ok_or_else(|| RpcError::ReturnedError("No address found in script_pub_key".into()))?
-            .require_network(Network::Regtest)
+        let change_address = Address::from_script(&change_output.script_pubkey, Network::Regtest)
             .map_err(|e| RpcError::ReturnedError(e.to_string()))?;
 
-        let change_amount = miner_vout.value.to_btc();
+        let change_amount = change_output.value.to_btc();
 
         Ok((change_address, change_amount))
     }
