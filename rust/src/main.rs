@@ -58,8 +58,8 @@ fn main() -> bitcoincore_rpc::Result<()> {
     // Create/Load the wallets, named 'Miner' and 'Trader'. Have logic to optionally create/load them if they do not exist or not loaded already.
     let miner_wallet = "Miner";
     let trader_wallet = "Trader";
-    let _ = get_wallet(&miner_rpc, miner_wallet).unwrap();
-    let _ = get_wallet(&trader_rpc, trader_wallet).unwrap();
+    let _ = get_wallet(&miner_rpc, miner_wallet);
+    let _ = get_wallet(&trader_rpc, trader_wallet);
 
     // Generate spendable balances in the Miner wallet. How many blocks needs to be mined?
     let miner_input_address = miner_rpc
@@ -103,14 +103,10 @@ fn main() -> bitcoincore_rpc::Result<()> {
     // Mine 1 block to confirm the transaction
     let confirmation_block = miner_rpc.generate_to_address(1, &miner_input_address);
 
-    // Extract all required transaction details
-    // 1. Transaction ID (txid)
-    println!("1. Transaction ID: {tx_id}");
-
     let miner_tx = miner_rpc.get_transaction(&tx_id, None)?;
     let miner_tx_details = miner_tx.details;
 
-    // 2. Miner's Input Address
+    // Miner's Input Address
     let miner_address_str = miner_input_address.to_string();
 
     // 3. Miner's Input Amount (in BTC)
@@ -222,7 +218,7 @@ fn get_wallet(rpc: &Client, wallet_name: &str) -> Result<LoadWalletResult, bitco
         .expect("wallet list")
         .iter()
         .any(|wallet| wallet.eq(wallet_name));
-    let wallets = rpc.list_wallets().unwrap();
+    let wallets = rpc.list_wallets();
     if wallet_exists {
         let mut wallet = rpc.load_wallet(wallet_name);
         if wallet.is_err() {
