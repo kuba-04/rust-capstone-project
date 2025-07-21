@@ -62,7 +62,7 @@ impl Display for TransactionDetails {
 }
 
 impl TransactionDetails {
-    /// Simple constructor for direct initialization
+    #[allow(clippy::too_many_arguments)]
     fn new(
         txid: Txid,
         miner_input_address: Address,
@@ -266,7 +266,7 @@ pub fn run_rpc_scenario() -> Result<(), RpcError> {
 
     // Write the data to ../out.txt
     println!("===");
-    println!("Saving result:\n{}", transaction_details);
+    println!("Saving result:\n{transaction_details}");
     write_to_file(&transaction_details)?;
 
     Ok(())
