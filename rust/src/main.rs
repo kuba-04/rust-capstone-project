@@ -5,12 +5,13 @@ use bitcoin::io::ErrorKind;
 use bitcoincore_rpc::bitcoin::{Address, Amount, BlockHash, Network, SignedAmount, Txid};
 use bitcoincore_rpc::bitcoincore_rpc_json::{AddressType, GetTransactionResultDetailCategory};
 use bitcoincore_rpc::json::{ListReceivedByAddressResult, LoadWalletResult};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bitcoincore_rpc::{Auth, Client, Error, RpcApi};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serializer};
 use serde_json::json;
 use std::fs::File;
 use std::io::Write;
+use std::str::FromStr;
 
 // Node access params
 const RPC_URL: &str = "http://127.0.0.1:18443"; // Default regtest RPC port
@@ -81,24 +82,24 @@ fn main() -> bitcoincore_rpc::Result<()> {
     let trader_output_address = trader_rpc
         .get_new_address(Some("BTC trades"), Some(AddressType::Bech32))?
         .require_network(Network::Regtest)
-        .expect("new trader address");
+        .map_err(|e| bitcoincore_rpc::Error::ReturnedError(e.to_string()))?;
 
     // Send 20 BTC from Miner to Trader
-    let tx_id = miner_rpc
-        .send_to_address(
-            &trader_output_address,
-            Amount::from_int_btc(20),
-            Some("I will send you some BTC for trading!"),
-            Some("my friend best trader"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("send BTC to trader");
+    let tx_id = miner_rpc.send_to_address(
+        &trader_output_address,
+        Amount::from_int_btc(20),
+        Some("I will send you some BTC for trading!"),
+        Some("my friend best trader"),
+        None,
+        None,
+        None,
+        None,
+    )?;
 
     // Check transaction in mempool
-    let mempool_entry = miner_rpc.get_mempool_entry(&tx_id).expect("mempool entry");
+    let mempool_entry = miner_rpc
+        .get_mempool_entry(&tx_id)
+        .map_err(|e| bitcoincore_rpc::Error::ReturnedError(e.to_string()))?;
 
     // Mine 1 block to confirm the transaction
     let confirmation_block = miner_rpc.generate_to_address(1, &miner_input_address);
@@ -135,16 +136,25 @@ fn main() -> bitcoincore_rpc::Result<()> {
     let miner_vout = miner_raw_tx
         .vout
         .iter()
-        .filter(|v| v.script_pub_key.address.as_ref().unwrap() != &trader_output_address)
+        .filter(|v| {
+            v.script_pub_key
+                .address
+                .as_ref()
+                .map_or(false, |addr| addr != &trader_output_address)
+        })
         .next_back()
-        .expect("miner UTXOs");
+        .ok_or_else(|| {
+            bitcoincore_rpc::Error::ReturnedError("No miner change output found".to_string())
+        })?;
     let miner_change_address = miner_vout
         .clone()
         .script_pub_key
         .address
-        .unwrap()
+        .ok_or_else(|| {
+            bitcoincore_rpc::Error::ReturnedError("No address found in script_pub_key".to_string())
+        })?
         .require_network(Network::Regtest)
-        .unwrap();
+        .map_err(|e| bitcoincore_rpc::Error::ReturnedError(e.to_string()))?;
 
     // 7. Miner Change Amount
     let miner_change_amount = miner_vout.value.to_btc();
@@ -212,42 +222,34 @@ impl OutputFile {
     }
 }
 
-fn get_wallet(rpc: &Client, wallet_name: &str) -> Result<LoadWalletResult, bitcoin::io::Error> {
-    let wallet_exists = rpc
-        .list_wallets()
-        .expect("wallet list")
-        .iter()
-        .any(|wallet| wallet.eq(wallet_name));
-    let wallets = rpc.list_wallets();
+fn get_wallet(rpc: &Client, wallet_name: &str) -> bitcoincore_rpc::Result<LoadWalletResult> {
+    // Check if wallet exists
+    let wallets = rpc.list_wallets()?;
+    let wallet_exists = wallets.iter().any(|wallet| wallet == wallet_name);
+
     if wallet_exists {
-        let mut wallet = rpc.load_wallet(wallet_name);
-        if wallet.is_err() {
-            let error = wallet.err().unwrap().to_string();
-            if error.contains("code: -4") {
-                // based on error code the wallet is already loaded, to access it, unload it fist
-                rpc.unload_wallet(Some(wallet_name)).expect("unload wallet");
-                wallet = rpc.load_wallet(wallet_name);
-            } else {
-                return Err(bitcoin::io::Error::new(ErrorKind::NotFound, error));
+        // Try loading the wallet
+        match rpc.load_wallet(wallet_name) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                // If error is "already loaded" (code -4), unload and retry
+                if e.to_string().contains("code: -4") {
+                    rpc.unload_wallet(Some(wallet_name))?;
+                    rpc.load_wallet(wallet_name)
+                } else {
+                    Err(e)
+                }
             }
         }
-        Ok(wallet.unwrap())
     } else {
-        // creating new wallet
-        let wallet = rpc.create_wallet(wallet_name, None, None, None, None);
-        if wallet.is_err() {
-            return if wallet.err().unwrap().to_string().contains("code: -4") {
-                Err(bitcoin::io::Error::new(
-                    ErrorKind::AlreadyExists,
-                    "wallet with this name already exists",
-                ))
-            } else {
-                Err(bitcoin::io::Error::new(
-                    ErrorKind::Other,
-                    "Unable to create wallet. Try again later",
-                ))
-            };
-        }
-        Ok(wallet.unwrap())
+        // Try creating a new wallet
+        rpc.create_wallet(wallet_name, None, None, None, None)
+            .map_err(|e| {
+                if e.to_string().contains("code: -4") {
+                    Error::ReturnedError("Wallet already exists but was not listed".into())
+                } else {
+                    e
+                }
+            })
     }
 }
